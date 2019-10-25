@@ -1,0 +1,189 @@
+---
+title: "[Extracting Sydney transport data from Twitter](https://www.r-bloggers.com/extracting-sydney-transport-data-from-twitter/)"
+author: "HAEYOON"
+date: '2019 9 13 '
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(pander)
+
+theme_set(theme_bw())
+
+# get data #get_timeline 써서 받아온 데이터랑 똑같음 
+
+#sydstats <- readRDS("~/r-blog/excel/sydstats.RDS")
+```
+
+# Introduction
+The [\@sydstats](https://twitter.com/sydstats) Twitter account uses the [Transport for NSW Open Data API](https://opendata.transport.nsw.gov.au/) to generate daily information about delays on the Sydney train network.
+
+Summaries are posted to Twitter in a text format which is sufficiently consistent to be easily parsed for analysis and visualisation.
+
+# Getting the data
+Using the `rtweet` package:
+
+```{r include=TRUE}
+library(rtweet)
+sydstats <- get_timeline("SydStats", n = 3200) #n은 최대 행의 갯수
+head(sydstats)
+```
+
+
+```{r include=TRUE}
+#시드니의 시간은 utc시간 보다 10시간 빠름으로 10시간을 더해준다.
+sydstats$created_at<-sydstats$created_at+hours(10)
+```
+
+The Twitter data can be processed into two datasets. The first dataset contains the year, month, week, day of week, percent of journeys delayed and whether the journeys were during the morning (07:00-09:00) or afternoon (16:00-18:30) peak times.
+
+First 6 rows:
+
+R정규 표현식
+         #^: 문자열 시작 위치를 매칭
+         #\\s : 간격, ` ` 
+         #+: 적어도 1 번 매칭한다.(+ 앞에 있는게)
+         #?:많아야 한번 매칭된다.(? 앞에 있는게)
+         #.*:임의 문자를 임의 갯수만큼 매칭한다
+         #[:digit:] 혹은 \\d : 숫자, 0,1,2,3,4,5,6,7,8,9, 동등한 표현 [0-9]
+         
+         
+
+
+```{r include=TRUE}
+delays_data <- sydstats %>% 
+  #가장 앞에Between이 들어가고 2019년인 타임라인출력
+  filter(grepl("^Between", text), 
+         year(created_at) == 2019) %>% 
+  select(created_at, text) %>% #created_at(작성시간),text(트윗내용)만 포함한 데이터
+  mutate(Date = as.Date(created_at), 
+         Start = str_match(text, "^Between\\s+(.*?)\\s+")[, 2], # 시작 시간
+         End = str_match(text, "and\\s+(.*?)\\s+today")[, 2], # 끝 시간
+         delayed = str_match(text, "\\s+(\\d+)%")[, 2] %>% as.numeric(), #연착율 
+         dtstart = ymd_hm(paste(Date, Start)), #연월일(작성시간)+시작시간
+         dtend = ymd_hm(paste(Date, End)), #연월일(작성시간)+끝시간
+         ystart = year(Date), #년도(작성시간)
+         mstart = month(dtstart), #월
+         wstart = isoweek(dtstart), #주(2019년의 몇번째 주인지)
+         dstart = factor(wday(dtstart, label = TRUE, week_start = 1)),#요일 
+         peak = factor(ifelse(hour(dtstart) == 7, "morning", "afternoon"))) %>% 
+  select(dtstart, dtend, ystart, mstart, wstart, dstart, delayed, peak)
+
+delays_data %>% slice(1:6)  #slice는 1:6행을 볼 수있는 함수
+
+```
+
+The second dataset contains the date, longest delay time, service time and service name.
+
+First 6 rows:
+```{r include=TRUE}
+service_data <- sydstats %>% 
+  filter(grepl("^The", text), #The로 시작하는 데이터
+         year(created_at) == 2019) %>% #2019년에 작성된 트윗
+  select(created_at, text) %>% #created_at(작성시간),text(트윗내용)만 포함한 데이터
+  mutate(Date = as.Date(created_at), #작성날짜 
+         Delay = str_match(text, "was\\s+(.*?)\\s+minutes")[, 2] %>% as.numeric(),#지연시간 
+         dtime = str_match(text, "\\s+the\\s+(.*?)\\s+")[, 2], #열차 시간
+         service = str_match(text, ":\\d+\\s+(.*?)\\s+service")[, 2]) #노선 구간
+
+service_data %>% select(-text) %>% slice(1:6) 
+```
+
+# Visualisation
+
+## Delayed journeys by day
+First, visualise the percentage of delayed journeys in 2019 by week, day of week and peak period. This is in effect a simplified calendar heat map, without month names.
+
+We can see that:
+
+- there are more delays in the morning compared with the afternoon
+- there are more morning delays Monday - Thursday than Friday
+- there are more morning delays on Sunday than Saturday 
+
+As there is often weekend trackwork, perhaps there are just less journeys overall on Saturday ?
+
+```{r include=TRUE}
+delays_data %>% 
+  ggplot(aes(wstart, dstart)) + 
+  geom_tile(aes(fill = delayed), color = "black") + 
+  scale_fill_viridis_c(name = "% delayed journeys") + 
+  scale_x_continuous(breaks = seq(0, 52, 5)) +
+  facet_wrap(~peak, ncol = 1) + 
+  coord_equal() +
+  labs(x = "Week",
+       y = "Day", 
+       title = "Sydney trains delayed journeys by week and day 2019")
+```
+
+## Delayed journeys by day of week
+Next we examine the distribution of delays by day.
+
+This confirms that Monday morning is the worst time to travel, with delays to 45% or more of journeys on half of all Monday morning peak periods.
+
+The median percentage of trips delayed falls on Tuesdays, rises again and then falls to its lowest value on Fridays.
+
+```{r include=TRUE}
+ggplot(data=delays_data,aes(dstart, delayed)) + 
+  geom_boxplot(fill = "slategray2") + 
+  facet_wrap(~peak, ncol = 1) +
+  labs(x = "Day",
+       y = "Delayed journeys (%)",
+       title = "Sydney trains delayed journeys distribution by weekday 2019")
+```
+
+## Delayed journeys by month
+The distribution of morning delays by month shows an interesting cyclical pattern, peaking in February and June and dropping off again in January, April and August.
+
+The peaks coincide with months after school holidays - could that be related?
+
+```{r include=TRUE}
+delays_data %>% 
+  mutate(mstart = month(dtstart, label = TRUE)) %>%  # month를 수치=>요인으로 변경
+  ggplot(aes(mstart, delayed)) + 
+  geom_boxplot(fill = "slategray2") + 
+  facet_wrap(~peak, ncol = 1) +
+  labs(x = "Month",
+       y = "Delayed journeys (%)",
+       title = "Sydney trains delayed journeys distribution by month 2019")
+```
+
+## Longest delayed journeys by service
+We count each time a service is named as the most delayed and plot the count for services that occur 5 or more times.
+
+```{r include=TRUE}
+service_data %>% 
+  count(service, sort = TRUE) %>% #구간별로 몇번 지연됐는지  
+  filter(n > 4) %>% #4번 이상 지연된 구간만 저장
+  ggplot(aes(reorder(service, n), n)) + 
+  geom_col(fill = "slategray2") + coord_flip() +
+  labs(x = "Service",y = "Count",
+       title = "Sydney trains most delayed services 2019",
+       subtitle = "for services named 5 or more times")
+```
+
+Then we plot the distribution of delay duration for those services, ordered by median delay duration.
+
+```{r include=TRUE}
+service_data %>% 
+  group_by(service) %>% filter(n() > 4) %>% #4번 이상 지연된 구간만 저장         
+  ungroup() %>% 
+  ggplot(aes(reorder(service, Delay, median), Delay)) + 
+  geom_boxplot(fill = "slategray2") + 
+  coord_flip() +
+  labs(x = "Service", y = "Delay (minutes)",
+       title = "Sydney trains distribution of delay duration 2019",
+       subtitle = "for services named 5 or more times")
+```
+
+# Summary
+
+- expect delays
+  - on Monday mornings
+  - after school holidays
+  - in the south\-west and north\-west
+- even plain text can be useful if given a bit of structure

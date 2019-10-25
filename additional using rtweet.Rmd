@@ -1,0 +1,91 @@
+---
+title: "additional using rtweet"
+author: "HAEYOON"
+date: '2019 9 17 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(rtweet)
+library(tidyverse)
+library(UpSetR)
+library(ggplot2)
+library(ggmap)
+library(wordcloud2)
+library(dplyr)
+library(stringr)
+library(tidytext)
+library(lubridate)
+```
+
+
+```{R}
+cho <- get_timeline("patriamea", n = 150)
+cho<-cho %>% filter(year((ymd_hms(cho$created_at)))==2019) 
+choTable <- cho %>% unnest_tokens(word, text) # text를 단어 단위로 쪼갬
+choTable <- choTable %>%count(word, sort = TRUE)# 각 단어가 몇번 등장했는지 카운트
+choTable1 <-choTable %>% # 자주등장하지만 의미없는 단어 제거 
+  filter(!word %in% c('t.co', 'https', '관련', '에', '가', '호',
+                      '위한', '에', '아니라', '합니다','것','amp','및',
+                      '제','1','2','3','4','5','의','등',
+                      '있는','있다',"는","조국"))
+wordcloud2(choTable1, size=0.7)
+```
+
+
+```{R}
+#r 전문가 및 관계인 
+rstaters <- c("hadleywickham", "jcheng","visnut", "RLadiesGlobal", "Rbloggers")
+
+#map_df는 데이터 프레임을 만드는 함수
+#followers1 <- map_df(rstaters, ~ get_followers(.x, n = 100000, retryonratelimit = TRUE) 
+#                    %>% mutate(account = .x))
+#write.csv(as.data.frame(followers1),"followers1.csv")
+```
+
+
+
+```{r}
+followers1<-read.csv("followers.csv")
+# 5개의 계정의 팔로워 목록 중 중복을 제거 
+aRdent_followers1 <- unique(followers1$user_id)
+#각 팔로워가 해당 계정을 팔로우 하면 1 아니면 0을 출력하도록 함 
+binaries <- rstaters %>% 
+  map_dfc(~ ifelse(aRdent_followers1 %in% filter(followers1, account == .x)$user_id, 1, 0) %>% 
+            as.data.frame) #데이터 프레임으로 변환 
+# 열이름 지정
+names(binaries) <- rstaters
+
+head(binaries)
+```
+
+
+
+```{r}
+# plot the sets with UpSetR
+upset(binaries, nsets = 5, main.bar.color = "SteelBlue", sets.bar.color = "DarkCyan", 
+      sets.x.label = "Follower Count", text.scale = c(rep(1.4, 5), 1), order.by = "freq")
+```
+
+create_token(consumer_key = "본인의 토큰 번호 넣기",
+consumer_secret = "본인의 토큰 번호 넣기",
+access_token  = "본인의 토큰 번호 넣기",
+access_secret = "본인의 토큰 번호 넣기")
+
+
+일주일전 검색치만 가져올 수 있으며 토큰이 있어야 함 
+```{r}
+rt1 <- search_tweets(q="koo ", include_rts=FALSE, "lang:en",
+                     geocode = lookup_coords("usa"),
+                     n = 1000, type="mixed",retryonratelimit = TRUE)
+
+rt1 <- lat_lng(rt1)#위도 경도 받아오기 
+
+world <- ggplot2::map_data("usa")
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group)) +
+  geom_point(data = rt1, aes(x = lng, y = lat), color = "#01FF70", size = 5) +
+  coord_quickmap() +
+  labs(title = "Geographic Distribution of the mentions of koo Tweet") +
+  theme_void()
+```
